@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SCADA Monitoring System</title>
+<style>
+  :root {
+    --bg: #eef2f6;
+    --panel: #ffffff;
+    --ink: #14263d;
+    --muted: #5b6b7e;
+    --line: #d3dce6;
+    --track: #dde5ee;
+    --ok: #1e7a46;
+    --warn: #a86400;
+    --crit: #b3261e;
+    --accent: #14263d;
+    --accent-ink: #ffffff;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1a27;
+      --panel: #16263a;
+      --ink: #e6edf5;
+      --muted: #9aabbd;
+      --line: #28405a;
+      --track: #223850;
+      --ok: #4cc380;
+      --warn: #f0a63a;
+      --crit: #ff6b60;
+      --accent: #e6edf5;
+      --accent-ink: #0f1a27;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.45;
+  }
+  main { max-width: 560px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 1.35rem; margin: 0 0 2px; }
+  .sub { color: var(--muted); margin: 0 0 16px; font-size: 0.92rem; }
+
+  .bar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  button {
+    font: inherit; font-weight: 600;
+    padding: 9px 18px; border-radius: 6px;
+    border: 1px solid var(--accent);
+    background: transparent; color: var(--ink);
+    cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: var(--accent-ink); }
+  button:focus-visible { outline: 3px solid var(--warn); outline-offset: 2px; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  #state { margin-left: auto; color: var(--muted); font-size: 0.9rem; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  .sensor { padding: 16px; border-bottom: 1px solid var(--line); }
+  .sensor:last-child { border-bottom: 0; }
+  .row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .name { font-weight: 600; }
+  .value { font-size: 1.7rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .value small { font-size: 0.9rem; font-weight: 500; color: var(--muted); margin-left: 3px; }
+  .badge { font-weight: 700; font-size: 0.9rem; }
+  .s-normal { color: var(--ok); }
+  .s-warning { color: var(--warn); }
+  .s-critical { color: var(--crit); }
+
+  .gauge { position: relative; height: 10px; border-radius: 5px; background: var(--track); margin: 12px 0 6px; }
+  .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 5px; width: 0; background: var(--ok); transition: width 0.4s ease; }
+  .fill.warning { background: var(--warn); }
+  .fill.critical { background: var(--crit); }
+  .tick { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--ink); opacity: 0.55; }
+  .scale { display: flex; justify-content: space-between; font-size: 0.78rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .stats { margin-top: 8px; font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  h2 { font-size: 1rem; margin: 24px 0 8px; }
+  #log { list-style: none; margin: 0; padding: 0; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+  #log li { padding: 8px 14px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; }
+  #log li:last-child { border-bottom: 0; }
+  #log .t { color: var(--muted); }
+  #log .n { flex: 1; }
+  .empty { padding: 14px; color: var(--muted); font-size: 0.9rem; }
+
+  @media (prefers-reduced-motion: reduce) { .fill { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>SCADA Monitoring System</h1>
+  <p class="sub">Temperature, pressure and voltage, refreshed every 2 seconds.</p>
+
+  <div class="bar">
+    <button id="startBtn" class="primary">Start</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <button id="clearBtn">Clear log</button>
+    <span id="state" role="status">Stopped</span>
+  </div>
+
+  <div class="panel" id="sensors"></div>
+
+  <h2>Recent readings</h2>
+  <div class="panel">
+    <ul id="log" aria-live="off"></ul>
+    <div class="empty" id="empty">No readings yet. Press Start.</div>
+  </div>
+</main>
+
+<script>
+  // Same logic as the Python version: ranges, thresholds, random readings, status check, stats
+  const SENSORS = {
+    Temperature: { min: 20,  max: 120, unit: "°C",  warn: 80,  crit: 100 },
+    Pressure:    { min: 0,   max: 15,  unit: "bar", warn: 10,  crit: 12  },
+    Voltage:     { min: 180, max: 260, unit: "V",   warn: 240, crit: 250 }
+  };
+
+  // Realistic starting values (transformer normal operation)
+  const lastValues = { Temperature: 55.0, Pressure: 5.0, Voltage: 230.0 };
+
+  // Max change per 2-second tick (thermal inertia -> slow change)
+  const STEP = { Temperature: 0.4, Pressure: 0.15, Voltage: 1.5 };
+
+  const history = { Temperature: [], Pressure: [], Voltage: [] };
+  const logEntries = [];
+  let timer = null;
+
+  // Random walk: new value = previous value + small change
+  function generateReading(s) {
+    const r = SENSORS[s];
+    const change = (Math.random() * 2 - 1) * STEP[s];
+    const newVal = Math.max(r.min, Math.min(r.max, lastValues[s] + change));
+    lastValues[s] = newVal;
+    return Math.round(newVal * 100) / 100;
+  }
+
+  function classify(s, v) {
+    const r = SENSORS[s];
+    if (v >= r.crit) return "CRITICAL";
+    if (v >= r.warn) return "WARNING";
+    return "NORMAL";
+  }
+
+  function stats(values) {
+    const sum = values.reduce((a, b) => a + b, 0);
+    return { mean: sum / values.length, min: Math.min(...values), max: Math.max(...values) };
+  }
+
+  // Build the sensor rows once
+  const wrap = document.getElementById("sensors");
+  Object.keys(SENSORS).forEach(function (name) {
+    const r = SENSORS[name];
+    const warnPct = ((r.warn - r.min) / (r.max - r.min)) * 100;
+    const critPct = ((r.crit - r.min) / (r.max - r.min)) * 100;
+    const div = document.createElement("div");
+    div.className = "sensor";
+    div.innerHTML =
+      '<div class="row"><span class="name">' + name + '</span><span class="badge s-normal" data-status>Waiting</span></div>' +
+      '<div class="row"><span class="value" data-value>--<small>' + r.unit + '</small></span></div>' +
+      '<div class="gauge"><div class="fill" data-fill></div>' +
+        '<div class="tick" style="left:' + warnPct + '%" title="Warning at ' + r.warn + '"></div>' +
+        '<div class="tick" style="left:' + critPct + '%" title="Critical at ' + r.crit + '"></div></div>' +
+      '<div class="scale"><span>' + r.min + '</span><span>Warning ' + r.warn + '</span><span>Critical ' + r.crit + '</span><span>' + r.max + '</span></div>' +
+      '<div class="stats" data-stats>Mean -- | Min -- | Max --</div>';
+    wrap.appendChild(div);
+    r.el = div;
+  });
+
+  function tick() {
+    const now = new Date().toLocaleTimeString();
+    Object.keys(SENSORS).forEach(function (name) {
+      const r = SENSORS[name];
+      const v = generateReading(name);
+      const status = classify(name, v);
+      const cls = status.toLowerCase();
+
+      history[name].push(v);
+
+      const valueEl = r.el.querySelector("[data-value]");
+      valueEl.innerHTML = v + "<small>" + r.unit + "</small>";
+      const badge = r.el.querySelector("[data-status]");
+      badge.textContent = status;
+      badge.className = "badge s-" + cls;
+      const fill = r.el.querySelector("[data-fill]");
+      fill.style.width = ((v - r.min) / (r.max - r.min)) * 100 + "%";
+      fill.className = "fill " + cls;
+
+      const st = stats(history[name]);
+      r.el.querySelector("[data-stats]").textContent =
+        "Mean " + st.mean.toFixed(1) + " | Min " + st.min.toFixed(1) + " | Max " + st.max.toFixed(1);
+
+      logEntries.unshift({ t: now, n: name, v: v + " " + r.unit, s: status });
+    });
+    while (logEntries.length > 8) logEntries.pop();
+    renderLog();
+  }
+
+  function renderLog() {
+    const ul = document.getElementById("log");
+    ul.innerHTML = logEntries.map(function (e) {
+      return '<li><span class="t">' + e.t + '</span><span class="n">' + e.n + " " + e.v +
+             '</span><span class="s-' + e.s.toLowerCase() + '">' + e.s + "</span></li>";
+    }).join("");
+    document.getElementById("empty").style.display = logEntries.length ? "none" : "block";
+  }
+
+  const startBtn = document.getElementById("startBtn");
+  const stopBtn = document.getElementById("stopBtn");
+  const stateEl = document.getElementById("state");
+
+  startBtn.addEventListener("click", function () {
+    if (timer) return;
+    tick();
+    timer = setInterval(tick, 2000);
+    startBtn.disabled = true; stopBtn.disabled = false;
+    stateEl.textContent = "Monitoring";
+  });
+
+  stopBtn.addEventListener("click", function () {
+    clearInterval(timer); timer = null;
+    startBtn.disabled = false; stopBtn.disabled = true;
+    stateEl.textContent = "Stopped";
+  });
+
+  document.getElementById("clearBtn").addEventListener("click", function () {
+    logEntries.length = 0;
+    renderLog();
+  });
+
+  renderLog();
+</script>
+</body>
+</html>
